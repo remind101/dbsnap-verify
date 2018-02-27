@@ -9,12 +9,7 @@ from .rds_funcs import (
     rds_event_messages,
 )
 
-from .state_doc import (
-    current_state,
-    transition_state,
-    get_or_create_state_doc,
-    clean_state_doc,
-)
+from .state_doc import get_or_create_state_doc
 
 import boto3
 
@@ -25,33 +20,27 @@ BOTO3_CONFIG = Config(retries={"max_attempts":3})
 import logging
 logger = logging.getLogger(__name__)
 
-try:
-    basestring
-except NameError:
-    basestring = str
-
 
 def wait(state_doc, rds_session):
     """wait: currently waiting for the next snapshot to appear."""
-    verified_snapshot_id = state_doc.get("snapshot_verified", "any snapshot")
     logger.info(
-        "Looking for a snapshot of %s (newer then %s)",
-        state_doc["database"],
-        verified_snapshot_id,
+        "Looking for a snapshot of %s (newer than %s)",
+        state_doc.database,
+        state_doc.snapshot_verified
     )
-    snapshot_desc = get_latest_snapshot(rds_session, state_doc["database"])
-    if snapshot_desc["DBSnapshotIdentifier"] != verified_snapshot_id:
-        # if the latest snapshot is older then the minimum, restore it.
-        state_doc["snapshot_verifying"] = snapshot_desc["DBSnapshotIdentifier"]
-        transition_state(state_doc, "restore")
+    snapshot_desc = get_latest_snapshot(rds_session, state_doc.database)
+    if snapshot_desc["DBSnapshotIdentifier"] != state_doc.snapshot_verified:
+        # if the latest snapshot is not equal to the most recently
+        # verified snapshot, restore / and verify it.
+        state_doc.snapshot_verifying = snapshot_desc["DBSnapshotIdentifier"]
+        state_doc.transition_state("restore")
         restore(state_doc, rds_session)
     else:
-        # continue waiting for a new snapshot to restore.
-        transition_state(state_doc, "wait")
+        state_doc.transition_state("wait")
         logger.info(
-            "Did not find a snapshot of %s (newer then %s)",
-            state_doc["database"],
-            verified_snapshot_id,
+            "Did not find a snapshot of %s (newer than %s)",
+            state_doc.database,
+            state_doc.snapshot_verified,
         )
         logger.info("Going to sleep.")
 
@@ -60,23 +49,26 @@ def restore(state_doc, rds_session):
     """restore: currently restoring a copy of the latest
     snapshot into a temporary RDS db instance."""
     tmp_db_description = get_database_description(
-        rds_session, state_doc["tmp_database"]
+        rds_session, state_doc.tmp_database
     )
     if tmp_db_description is None:
         logger.info(
             "Restoring snapshot of %s to %s",
-            state_doc["database"],
-            state_doc["tmp_database"]
+            state_doc.database,
+            state_doc.tmp_database
         )
-        subnet_ids = state_doc["database_subnet_ids"]
-        if isinstance(subnet_ids, basestring):
-            subnet_ids = subnet_ids.split(",")
         restore_from_latest_snapshot(
-            rds_session, state_doc["database"], subnet_ids
+            rds_session, state_doc.database, state_doc.subnet_ids
         )
     elif tmp_db_description["DBInstanceStatus"] == "available":
-        transition_state(state_doc, "modify")
+        state_doc.transition_state("modify")
         modify(state_doc, rds_session)
+    else:
+        logger.info(
+            "Still restoring snapshot of %s to %s",
+            state_doc.database,
+            state_doc.tmp_database
+        )
 
 
 def modify(state_doc, rds_session):
@@ -84,15 +76,12 @@ def modify(state_doc, rds_session):
     settings to allow the dbsnap-verify tool to access it."""
     logger.info(
         "Modifying %s master password and security groups",
-        state_doc["tmp_database"]
+        state_doc.tmp_database
     )
-    security_group_ids = state_doc["database_security_group_ids"]
-    if isinstance(security_group_ids, basestring):
-        security_group_ids = security_group_ids.split(",")
-    state_doc["tmp_password"] = modify_db_instance_for_verify(
-        rds_session, state_doc["tmp_database"], security_group_ids,
+    state_doc.tmp_password = modify_db_instance_for_verify(
+        rds_session, state_doc.tmp_database, state_doc.security_group_ids,
     )
-    transition_state(state_doc, "verify")
+    state_doc.transition_state("verify")
     verify(state_doc, rds_session)
 
 
@@ -100,11 +89,11 @@ def verify(state_doc, rds_session):
     """verify: currently verifying the temporary RDS db instance
     using the supplied checks. (not implemented)"""
     tmp_db_description = get_database_description(
-        rds_session, state_doc["tmp_database"]
+        rds_session, state_doc.tmp_database
     )
     tmp_db_status = tmp_db_description["DBInstanceStatus"]
     tmp_db_event_messages = rds_event_messages(
-        rds_session, state_doc["tmp_database"]
+        rds_session, state_doc.tmp_database
     )
     if 'Reset master credentials' in tmp_db_event_messages and tmp_db_status == "available":
         # TODO: this is currently not implemented so we move to cleanup.
@@ -112,16 +101,16 @@ def verify(state_doc, rds_session):
         # and run SQL query checks defined by the configuration.
         logger.info(
             "Skipping verify of %s, not implemented",
-            state_doc["tmp_database"]
+            state_doc.tmp_database
         )
         #connection = connect_to_endpoint(db_description["endpoint"])
-        #result = run_all_the_tests(connection, state_doc["verfication_checks"])
+        #result = run_all_the_tests(connection, state_doc.verfication_checks)
         #if result:
-        #    transition_state(state_doc, "cleanup")
+        #    state_doc.transition_state("cleanup")
         #else:
-        #    transition_state(state_doc, "alarm")
+        #    state_doc.transition_state("alarm")
         #    alarm(state_doc, "error")
-        transition_state(state_doc, "cleanup")
+        state_doc.transition_state("cleanup")
         cleanup(state_doc, rds_session)
 
 
@@ -129,28 +118,33 @@ def cleanup(state_doc, rds_session):
     """clean: currently tearing down the temporary RDS db instance
     and anything else we created or modified."""
     tmp_db_description = get_database_description(
-        rds_session, state_doc["tmp_database"]
+        rds_session, state_doc.tmp_database
     )
     if tmp_db_description is None:
         # cleanup of db subnet group, tmp_password, and transition to wait.
         logger.info(
             "cleaning %s subnet group and tmp_password",
-            state_doc["tmp_database"]
+            state_doc.tmp_database
         )
-        destroy_database_subnet_group(rds_session, state_doc["tmp_database"])
+        destroy_database_subnet_group(rds_session, state_doc.tmp_database)
         # remove tmp_password, clear old states, wait for next snapshot.
-        state_doc = clean_state_doc(state_doc)
+        state_doc.clean()
         # wait for next snapshot (which could appear tomorrow).
-        transition_state(state_doc, "wait")
+        state_doc.transition_state("wait")
     elif tmp_db_description["DBInstanceStatus"] == "available":
         logger.info(
             "cleaning / destroying %s",
-            state_doc["tmp_database"]
+            state_doc.tmp_database
         )
         destroy_database(
             rds_session,
-            state_doc["tmp_database"],
+            state_doc.tmp_database,
             tmp_db_description["DBInstanceArn"]
+        )
+    else:
+        logger.info(
+            "still cleaning / destroying %s",
+            state_doc.tmp_database
         )
 
 def alarm(state_doc, rds_session):
@@ -179,10 +173,10 @@ def handler(event):
         # from from Cloudwatch or SNS, like an unrelated RDS db instance.
         logger.info("Ignoring unrelated RDS event: %s", event)
     else:
-        state_handler = state_handlers[current_state(state_doc)]
+        state_handler = state_handlers[state_doc.current_state]
         rds_session = boto3.client(
             "rds",
-            region_name=state_doc["snapshot_region"],
+            region_name=state_doc.snapshot_region,
             config=BOTO3_CONFIG,
         )
         state_handler(state_doc, rds_session)

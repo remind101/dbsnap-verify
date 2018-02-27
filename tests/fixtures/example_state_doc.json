@@ -2,7 +2,6 @@
   "database": "test-db-instance",
   "database_subnet_ids": "subnet-32220000,subnet-df7d0000,subnet-b39e0000,subnet-40040000",
   "database_security_group_ids": "sg-33de0000",
-  "tmp_database": "dbsnap-verify-test-db-instance",
   "states": [
     {
       "timestamp": 1510298703.585208,

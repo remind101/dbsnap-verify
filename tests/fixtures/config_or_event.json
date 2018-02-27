@@ -1,7 +1,7 @@
 {
   "database" : "prod-test-db",
-  "database_sg_ids" : "sg-0123456789",
-  "database_sn_ids" : "subnet-1111,subnet-2222,subnet-3333,subnet-4444",
+  "database_security_group_ids" : "sg-0123456789",
+  "database_subnet_ids" : "subnet-1111,subnet-2222,subnet-3333,subnet-4444",
   "state_doc_bucket" : "bucket-to-hold-state-documents",
   "snapshot_region" : "us-west-1",
   "checks" : [

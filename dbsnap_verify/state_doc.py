@@ -10,116 +10,251 @@ from .rds_funcs import dbsnap_verify_db_id
 
 DB_ID_PREFIX_LEN = 14
 
-# TODO: it feels like `state_doc` should be a dict-like class
+try:
+    basestring
+except NameError:
+    basestring = str
 
 
 def now_timestamp():
     return time.time()
 
 
-def current_state(state_doc):
-    return state_doc["states"][-1]["state"]
+class DocToObject(object):
+    """
+    Produce a Python object from a dict or json document.
+    Make document keys is accessible as object attributes.
+    """
+
+    def setattrs_from_dict(self, dictionary):
+        for key, value in dictionary.items():
+            setattr(self, key, value)
+
+    def __init__(self, document=None):
+        """document (json/dictionary): a document to turn into an object."""
+        if document is not None:
+            self.from_json(document)
+
+    def from_json(self, document):
+        if isinstance(document, dict):
+            self.setattrs_from_dict(document)
+        elif isinstance(document, basestring):
+            self.setattrs_from_dict(json.loads(document))
+        else:
+            raise Exception("Invalid document type, must be JSON or Dict.")
+
+    @property
+    def to_json(self):
+        return json.dumps(self.__dict__, indent=2)
 
 
-def get_state_doc_bucket(config):
-    return environ.get("STATE_DOC_BUCKET", config.get("state_doc_bucket", None))
+class StateDoc(DocToObject):
+
+    def __init__(
+            self,
+            name,
+            states=None,
+            state_doc_path=None,
+            state_doc_bucket=None,
+            **kwargs):
+
+        if states is None:
+            self.states = []
+        else:
+            self.states = states
+        self.state_doc_name = name
+        self.state_doc_path = state_doc_path
+        self.state_doc_bucket = state_doc_bucket
+        super(StateDoc, self).__init__(kwargs)
+
+    @property
+    def state_doc_bucket_name(self):
+        return environ.get("STATE_DOC_BUCKET", self.state_doc_bucket)
+
+    @property
+    def state_doc_file_path(self):
+        return environ.get("STATE_DOC_PATH", self.state_doc_path)
+
+    @property
+    def current_state(self):
+        if self.states:
+            return self.states[-1]["state"]
+
+    @property
+    def persistence(self):
+        """str: "state_doc_bucket" or "state_doc_path" or raises exception."""
+        if self.state_doc_bucket_name and self.state_doc_file_path:
+            msg = "Choose either `state_doc_bucket` or `state_doc_path` not both."
+            raise Exception(msg)
+        elif self.state_doc_bucket_name:
+            return "state_doc_bucket"
+        elif self.state_doc_file_path:
+            return "state_doc_path"
+
+    @property
+    def state_doc_s3_key(self):
+        return "state-doc-{}.json".format(self.state_doc_name)
+
+    def _save_state_doc_in_s3(self):
+        if self.state_doc_bucket_name:
+            s3 = boto3.client("s3")
+            s3.put_object(
+                Bucket=self.state_doc_bucket_name,
+                Key=self.state_doc_s3_key,
+                Body=self.to_json,
+            )
+    
+    def _load_state_doc_from_s3(self):
+        """Returns a JSON String State Document."""
+        s3 = boto3.client("s3")
+        s3_object = s3.get_object(
+            Bucket=self.state_doc_bucket_name,
+            Key=self.state_doc_s3_key,
+        )
+        return s3_object["Body"].read()
+
+    def _save_state_doc_in_path(self):
+        with open(self.state_doc_file_path, 'w') as json_file:
+            json_file.write(self.to_json)
+
+    def _load_state_doc_from_path(self):
+        """Returns a JSON String State Document."""
+        with open(self.state_doc_file_path, 'r') as json_file:
+            return json_file.read()
+
+    def transition_state(self, new_state):
+        """Change the state of the StateDoc and save to persistence."""
+        self.states.append(
+            {"state" : new_state, "timestamp" : now_timestamp()}
+        )
+        self.save()
+
+    def trim_states(self, count_to_keep=100):
+        trim_index = len(self.states) - count_to_keep
+        self.states = self.states[trim_index:]
+
+    def save(self):
+        if self.persistence == "state_doc_bucket":
+            self._save_state_doc_in_s3()
+        elif self.persistence == "state_doc_path":
+            self._save_state_doc_in_path()
+
+    def load(self):
+        if self.persistence == "state_doc_bucket":
+            self.from_json(self._load_state_doc_from_s3())
+        elif self.persistence == "state_doc_path":
+            self.from_json(self._load_state_doc_from_path())
 
 
-def set_state_doc_in_path(state_doc):
-    with open(state_doc["state_doc_path"], 'w') as json_file:
-        json.dump(state_doc, json_file, indent=2)
+class DbsnapVerifyStateDoc(StateDoc):
+    """
+    This object is passed around in the state machine.
+    It can persist it's state in a file path or s3.
+    """
+
+    def __init__(
+        self,
+        database,
+        database_subnet_ids=None,
+        database_security_group_ids=None,
+        snapshot_region=None,
+        states=None,
+        state_doc_path=None,
+        state_doc_bucket=None,
+        snapshot_verifying=None,
+        snapshot_verified=None,
+        tmp_password=None,
+        **kwargs
+        ):
+        """
+        database (string):
+            The AWS RDS DB Identifier whose snapshot we should restore/verify.
+
+        database_subnet_ids (string):
+            A CSV of subnet ids to create a database subnet group with.
+
+        database_security_group_ids (string):
+            A CSV of security group ids to add to the newly restored
+            temporary database instance.
+
+        snapshot_region (string):
+            The region to find the snapshot and restore/verify into.
+
+        state_doc_path (string):
+            The path to the local file to store the state document.
+            If you choose this, do not set state_doc_bucket.
+
+        state_doc_bucket (string):
+            The S3 bucket to store the state document.
+            If you choose this, do not set state_doc_path.
+
+        tmp_password (string):
+            The temporary randomly generated RDS master password.
+            This is used for data verification.
+
+        snapshot_verifying (string):
+            The current AWS RDS Snapshot ID under verification.
+
+        snapshot_verified (string):
+            The most recently verified AWS RDS Snapshot ID.
+
+        states (list):
+            A list of recent state transitions.
+        """
+        super(DbsnapVerifyStateDoc, self).__init__(
+            name=database,
+            states=states,
+            state_doc_path=state_doc_path,
+            state_doc_bucket=state_doc_bucket,
+            database=database,
+            database_subnet_ids=database_subnet_ids,
+            database_security_group_ids=database_security_group_ids,
+            snapshot_region=snapshot_region,
+            snapshot_verifying=snapshot_verifying,
+            snapshot_verified=snapshot_verified,
+            tmp_password=tmp_password,
+            kwargs=kwargs,
+        )
+
+    @property
+    def tmp_database(self):
+        return dbsnap_verify_db_id(self.database)
+
+    def clean(self, state_count_to_keep=100):
+        self.tmp_password = None
+        self.snapshot_verified = self.snapshot_verifying
+        self.snapshot_verifying = None
+        self.trim_states(state_count_to_keep)
+
+    def _csv_to_list(self, csv):
+        if isinstance(csv, basestring):
+            return csv.split(",")
+        return csv
+
+    @property
+    def subnet_ids(self):
+        return self._csv_to_list(self.database_subnet_ids)
+
+    @property
+    def security_group_ids(self):
+        return self._csv_to_list(self.database_security_group_ids)
 
 
-def upload_state_doc(state_doc):
-    state_doc_json = json.dumps(state_doc, indent=2)
-    s3 = boto3.client("s3")
-    s3.put_object(
-        Bucket=get_state_doc_bucket(state_doc),
-        Key=state_doc_s3_key(state_doc["database"]),
-        Body=state_doc_json,
+def create_dbsnap_verify_state_doc(
+        database,
+        database_subnet_ids,
+        database_security_group_ids,
+        snapshot_region,
+        **kwargs
+    ):
+    state_doc = DbsnapVerifyStateDoc(
+        database,
+        database_subnet_ids=database_subnet_ids,
+        database_security_group_ids=database_security_group_ids,
+        snapshot_region=snapshot_region,
+        **kwargs
     )
-
-
-def set_state_doc_in_s3(state_doc):
-    upload_state_doc(state_doc)
-    return state_doc
-
-
-def state_doc_s3_key(database):
-    return "state-doc-{}.json".format(database)
-
-
-def download_state_doc(config):
-    s3 = boto3.client("s3")
-    s3_object = s3.get_object(
-        Bucket=get_state_doc_bucket(config),
-        Key=state_doc_s3_key(config["database"]),
-    )
-    # download state_doc json from s3 and stick it into a string.
-    state_doc_json = s3_object["Body"].read()
-    # turn json into a dict and return it.
-    return json.loads(state_doc_json)
-
-
-def create_state_doc(config):
-    state_doc = config
-    state_doc["tmp_database"] = dbsnap_verify_db_id(state_doc["database"])
-    state_doc["states"] = []
-    return transition_state(state_doc, "wait")
-
-
-def clean_state_doc(state_doc, state_count_to_keep=100):
-    state_doc.pop("tmp_password", None)
-    state_doc["snapshot_verified"] = state_doc.pop("snapshot_verifying", None)
-    trim_index = len(state_doc["states"]) - state_count_to_keep
-    state_doc["states"] = state_doc["states"][trim_index:]
-    return state_doc
-
-
-def get_state_doc_in_s3(config):
-    """get the state_doc in S3 or None."""
-    try:
-        return download_state_doc(config)
-    except boto3.client("s3").exceptions.NoSuchKey:
-        return None
-
-
-def get_or_create_state_doc_in_s3(config):
-    """get (or create if missing) the state_doc in S3."""
-    state_doc = get_state_doc_in_s3(config)
-    if state_doc is None:
-        state_doc = create_state_doc(config)
-    return state_doc
-
-
-def get_or_create_state_doc_in_path(config):
-    try:
-        with open(config["state_doc_path"], 'r') as json_file:
-            state_doc = json.load(json_file)
-    except IOError:
-        state_doc = create_state_doc(config)
-    return state_doc
-
-
-def state_doc_persistence(config):
-    """str: "state_doc_bucket" or "state_doc_path" or raises exception."""
-    if get_state_doc_bucket(config) and "state_doc_path" in config:
-        msg = "Choose either `state_doc_bucket` or `state_doc_path` not both."
-        raise Exception(msg)
-    elif get_state_doc_bucket(config):
-        return "state_doc_bucket"
-    elif "state_doc_path" in config:
-        return "state_doc_path"
-
-
-def transition_state(state_doc, new_state):
-    state_doc["states"].append(
-        {"state" : new_state, "timestamp" : now_timestamp()}
-    )
-    if state_doc_persistence(state_doc) == "state_doc_bucket":
-        set_state_doc_in_s3(state_doc)
-    else:
-        set_state_doc_in_path(state_doc)
+    state_doc.transition_state("wait")
     return state_doc
 
 
@@ -137,15 +272,20 @@ def get_or_create_state_doc(config):
             # something sent us an invalid event.
             return None
 
-        return get_state_doc_in_s3(
-            {
-                "database": database_id,
-                "rds_event_latest_message": rds_event_message,
-            }
-        )
+        state_doc = DbsnapVerifyStateDoc(database_id)
+        state_doc.rds_event_latest_message = rds_event_message
+
     else:
-        persistence = state_doc_persistence(config)
-        if persistence == "state_doc_path":
-            return get_or_create_state_doc_in_path(config)
-        elif persistence == "state_doc_bucket":
-            return get_or_create_state_doc_in_s3(config)
+        # Try to load StateDoc from config event.
+        state_doc = DbsnapVerifyStateDoc(**config)
+
+        try:
+            # try to load the state_doc.
+            state_doc.load()
+        except (boto3.client("s3").exceptions.NoSuchKey, IOError):
+            # create the state_doc if it doesn't exist.
+            state_doc = create_dbsnap_verify_state_doc(**config)
+
+        return state_doc
+
+    return None
