@@ -195,9 +195,10 @@ class DbsnapVerifyStateDoc(StateDoc):
         states=None,
         state_doc_path=None,
         state_doc_bucket=None,
-        snapshot_verifying=None,
+        snapshot_verifying=None, 
         snapshot_verified=None,
         tmp_password=None,
+        checks=None,
         **kwargs
     ):
         """
@@ -234,6 +235,10 @@ class DbsnapVerifyStateDoc(StateDoc):
 
         states (list):
             A list of recent state transitions.
+
+        checks (dict):
+            A dictionnary of checks to verify the DB.
+            This is used for data verification
         """
         super(DbsnapVerifyStateDoc, self).__init__(
             name=database,
@@ -247,6 +252,7 @@ class DbsnapVerifyStateDoc(StateDoc):
             snapshot_verifying=snapshot_verifying,
             snapshot_verified=snapshot_verified,
             tmp_password=tmp_password,
+            checks=checks,
             **kwargs
         )
 

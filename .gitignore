@@ -107,3 +107,9 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+# osx
+.DS_Store
+
+# state file
+state.json

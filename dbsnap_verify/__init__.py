@@ -13,7 +13,11 @@ from .state_doc import get_or_create_state_doc
 
 from .datadog_output import datadog_lambda_check_output
 
+from .utils import describe_db_instances
+
 import boto3
+import psycopg2
+import re
 
 # retry 3 times on errors.
 from botocore.config import Config
@@ -123,15 +127,43 @@ def modify(state_doc, rds_session):
             "Waiting for master credentials reset for %s", state_doc.tmp_database
         )
 
-
 def verify(state_doc, rds_session):
     """verify: currently verifying the temporary RDS db instance
-    using the supplied checks. (not implemented)"""
-    # TODO: this is currently not implemented so we move to cleanup.
-    # in the future this code block will actually connect to the endpoint
-    # and run SQL query checks defined by the configuration.
-    logger.info("Skipping verify of %s, not implemented", state_doc.tmp_database)
-    logger.info(dbsnap_verify_datadog_output(state_doc, "OK"))
+    using the supplied checks."""
+    instances = describe_db_instances(rds_session, state_doc.tmp_database)
+    rds_engine = instances.get('DBInstances')[0].get('Engine')
+    rds_address = instances.get('DBInstances')[0].get('Endpoint').get('Address')
+    rds_port = instances.get('DBInstances')[0].get('Endpoint').get('Port')
+    rds_masterUsername = instances.get('DBInstances')[0].get('MasterUsername')
+    rds_DBName = instances.get('DBInstances')[0].get('DBName')
+    if rds_engine == "postgres":
+        conn = psycopg2.connect(host=rds_address, port=rds_port, user=rds_masterUsername, password=state_doc.tmp_password, database=rds_DBName)
+    logger.info("Running checks on %s", state_doc.tmp_database)
+    success = True          
+    for check in state_doc.checks:
+        if check.get("type") == "query":
+            cursor = conn.cursor()
+            cursor.execute(check.get("query"))
+            results = cursor.fetchall()
+            r = re.compile(check.get("regex"))
+            try:
+                if filter(r.match, results):
+                    logger.info(
+                        "Found regex result in %s", state_doc.tmp_database
+                    )
+            except:
+                logger.info(
+                    "Didnt find regex result in %s", state_doc.tmp_database
+                )
+                logger.info(dbsnap_verify_datadog_output(state_doc, "CRITICAL"))
+                success = False
+                break
+    if not state_doc.checks:
+        logger.info(
+            "No checks to run on %s", state_doc.tmp_database
+            )
+    elif success:
+        logger.info(dbsnap_verify_datadog_output(state_doc, "OK"))
     state_doc.transition_state("cleanup")
     cleanup(state_doc, rds_session)
 
