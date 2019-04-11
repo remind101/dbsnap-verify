@@ -13,7 +13,7 @@ setup(
     url="https://github.com/remind101/dbsnap",
     license="New BSD license",
     packages=find_packages(),
-    install_requires=["boto3", "botocore>=1.6.0"],
+    install_requires=["boto3", "botocore>=1.6.0", "psycopg2"],
     tests_require=["nose", "mock", "funcsigs", "flake8", "pytest"],
     setup_requires=["pytest-runner"],
     entry_points={
