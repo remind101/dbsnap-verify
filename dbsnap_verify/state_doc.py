@@ -195,7 +195,7 @@ class DbsnapVerifyStateDoc(StateDoc):
         states=None,
         state_doc_path=None,
         state_doc_bucket=None,
-        snapshot_verifying=None, 
+        snapshot_verifying=None,
         snapshot_verified=None,
         tmp_password=None,
         checks=None,
