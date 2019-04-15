@@ -144,14 +144,19 @@ def verify(state_doc, rds_session):
         if check.get("type") == "query":
             cursor = conn.cursor()
             cursor.execute(check.get("query"))
-            results = cursor.fetchall()
+            r = cursor.fetchall()
+            results = [item for item, in r]
             r = re.compile(check.get("regex"))
+            match = list(filter(r.match, results))
+            logger.info("match something %s", match)
             try:
-                if filter(r.match, results):
+                if len(match) > 0:
+                    logger.info("The result is %s", match)
                     logger.info(
                         "Found regex result in %s", state_doc.tmp_database
                     )
-            except:
+            except Exception as e:
+                print(e)
                 logger.info(
                     "Didnt find regex result in %s", state_doc.tmp_database
                 )
