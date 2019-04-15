@@ -148,7 +148,6 @@ def verify(state_doc, rds_session):
             results = [item for item, in r]
             r = re.compile(check.get("regex"))
             match = list(filter(r.match, results))
-            logger.info("match something %s", match)
             try:
                 if len(match) > 0:
                     logger.info("The result is %s", match)
