@@ -150,9 +150,8 @@ def verify(state_doc, rds_session):
             match = list(filter(r.match, results))
             try:
                 if len(match) > 0:
-                    logger.info("The result is %s", match)
                     logger.info(
-                        "Found regex result in %s", state_doc.tmp_database
+                        "Found regex result %s in %s", match, state_doc.tmp_database
                     )
             except Exception as e:
                 print(e)
