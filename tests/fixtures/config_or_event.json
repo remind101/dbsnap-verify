@@ -7,8 +7,8 @@
   "checks" : [
     {
       "type" : "query",
-      "query" : "SELECT * FROM pg_catalog.pg_tables;",
-      "regex" : "mytable"
+      "query" : "SELECT tablename FROM pg_catalog.pg_tables;",
+      "regex" : "^mytable$"
     }
   ]
 }

@@ -237,7 +237,7 @@ class DbsnapVerifyStateDoc(StateDoc):
             A list of recent state transitions.
 
         checks (dict):
-            A dictionnary of checks to verify the DB.
+            A dictionary of checks to verify the DB.
             This is used for data verification
         """
         super(DbsnapVerifyStateDoc, self).__init__(
